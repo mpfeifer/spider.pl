@@ -8,13 +8,7 @@ use Log::Log4perl;
 
 Log::Log4perl::init('log4perl.conf');
 
-# TODO:
-#      - remove http:// prefix from hosts
-#      - resolve ips of hosts
-#      - do a breadth first search
-#      - configure search style breadth/depths-first
-
-my $logger = Log::Log4perl->get_logger("spider");
+my $logger = Log::Log4perl->get_logger("applogger");
 my $target;
 my $host;
 my $umax=15000;
@@ -37,7 +31,7 @@ sub pushurl {
   $logger->trace("Entering pushurl");
   my ($url) = @_;
   if (! exists($visitedurls{$url})) {
-    $logger->debug("Pushing new url $url.");
+    $logger->debug("Pushing new url $url on todo stack.");
     push (@hrefs, $url);
     $visitedurls{$url}=1;
     open (DFILE, ">>$urlsfilename");
@@ -47,31 +41,32 @@ sub pushurl {
   $logger->trace("Leaving pushurl");
 }
 
-sub extract_host {
+sub extract_host_and_protocol {
   $logger->trace("Entering extract_host");
   my ($url) = @_;
-  ( $url =~ /(https?:\/\/[a-zA-Z0-9.]+)\/?/ );
-  my $host = $1;
+  ( $url =~ /(https?:\/\/[a-zA-Z0-9.]*)\/?/ );
+  my $tmphost = $1;
+  $logger->debug("Extracted host $tmphost from url $url");
   $logger->trace("Leaving extract_host");
-  return $host;
+  return $tmphost;
 }
 
 sub pushhost {
   $logger->trace("Entering pushhost");
   my ($hostname) = @_;
-#  $hostname =~ s/https?:\/\///;
-  $logger->debug("Found host $host");
+  $logger->debug("Pushing host \"$hostname\" to list of visited hosts");
   my $found = 1;
   foreach (@visitedhosts) {
-    if ($_ eq $host) {
+    if ($_ eq $hostname) {
       $found=0;
       last;
     }
   }
   if ($found == 1) {
+    $logger->debug("Storing hostname $hostname");
     push(@visitedhosts, $hostname);
     open (DFILE, ">>$hostsfilename");
-    print DFILE "$host\r\n";
+    print DFILE "$hostname\r\n";
     close (DFILE);
   }
   $logger->trace("Leaving pushhost");
@@ -80,14 +75,20 @@ sub pushhost {
 sub normalize_url {
   $logger->trace("Entering normalize_url");
   my ($hostname, $url) = @_;
+  $logger->debug("Normalizing url $url with host $hostname");
   my $finalurl;
-  if ($url =~ /^[\/].*$/) {
-    $finalurl = $hostname . $url;
+  chomp($url);
+  if ($url =~ /^\/\//) {
+    $finalurl = "";
   } else {
-    if ($url =~ /^https?:\/\//) {
-      $finalurl = $url;
+    if ($url =~ /^\/.*$/) {
+      $finalurl = $hostname . $url;
     } else {
-      $finalurl = $hostname . "/" . $url;
+      if ($url =~ /^https?:\/\//) {
+	$finalurl = $url;
+      } else {
+	$finalurl = $hostname . "/" . $url;
+      }
     }
   }
   $logger->debug("Normalizing url \"$url\" -> \"$finalurl\"");
@@ -97,31 +98,35 @@ sub normalize_url {
 
 sub nexturl {
   my $result;
-  if ($searchstyle == 0) {
-    $result = pop(@hrefs);
+  if (scalar(@hrefs) == 0) {
+    die "Ran into dead end. No urls left.";
   } else {
-    $result = $hrefs[$urlcount];
-  }
-  $urlcount++;
-  if ($urlcount > $umax) {
-    die "umax was reached."
+    if ($searchstyle == 0) {
+      $result = pop(@hrefs);
+    } else {
+      $result = $hrefs[$urlcount];
+    }
+    $urlcount++;
+    if ($urlcount > $umax) {
+      die "umax was reached."
+    }
   }
   return $result;
 }
 
 sub init() {
-  $target=random_url();
+  $logger->trace("Entering initialization");
   GetOptions("target=s" => \$target, "umax=i" => \$umax);
   $target =~ /(https?:\/\/[a-zA-Z0-9.]+)\/?/;
-  $host=$1;
-  $logger->debug("Starting spider with target host \"$host\"");
   pushurl($target);
+  $logger->debug("Initialized with target $target");
+  $logger->trace("Leaving initialization");
 }
 
 sub main_loop() {
   while (@hrefs) {
     my $nexturl = nexturl();
-    $logger->debug("Fetching url \"$nexturl\"");
+    $logger->debug("Asking HTTP::Tiny to fetch url \"$nexturl\"");
     my $response = HTTP::Tiny->new->get($nexturl);
     #while (my ($k, $v) = each %{$response->{headers}}) {
     #  for (ref $v eq 'ARRAY' ? @$v : $v) {
@@ -129,13 +134,21 @@ sub main_loop() {
     #  }
     #}
     #print $response->{content};
-    $host = extract_host($nexturl);
+    $host = extract_host_and_protocol($nexturl);
     pushhost($host);
+    $logger->debug("Search and process new hrefs");
     if (length ($response->{content})) {
-      my @newhrefs = $response->{content} =~ /href=\"([\/a-zA-Z0-9:.]+)\"/ig;
+      my @newhrefs = $response->{content} =~ /href=\"([\/a-zA-Z0-9:?&.]+)\"/gi;
+      my $debugstring = "New hrefs found: ";
+      foreach (@newhrefs) {
+	$debugstring = $debugstring . "$_, ";
+      }
+      $logger->debug($debugstring);
       foreach (@newhrefs) {
 	my $finalurl = normalize_url($host, $_);
-	pushurl($finalurl);
+	if (length($finalurl) > 0) {
+	  pushurl($finalurl);
+	}
       }
     }
   }
