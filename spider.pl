@@ -1,10 +1,13 @@
 #!/usr/bin/perl
 
+push (@INC, "./");
+
 use strict;
 use warnings;
 use HTTP::Tiny;
 use Getopt::Long;
 use Log::Log4perl;
+use host;
 
 Log::Log4perl::init('log4perl.conf');
 
